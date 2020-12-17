@@ -1,4 +1,6 @@
 *~
+build
+scenes
 src/build
 src/bin
 src/objs
