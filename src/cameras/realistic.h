@@ -55,6 +55,7 @@ class RealisticCamera : public Camera {
                     std::vector<Float> &lensData, Film *film,
                     const Medium *medium);
     Float GenerateRay(const CameraSample &sample, Ray *) const;
+    std::vector<Point2<Float>> atestvec;
 
   private:
     // RealisticCamera Private Declarations

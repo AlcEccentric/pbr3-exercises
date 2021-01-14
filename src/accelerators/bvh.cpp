@@ -100,7 +100,6 @@ struct LinearBVHNode {
     };
     uint16_t nPrimitives;  // 0 -> interior node
     uint8_t axis;          // interior node: xyz
-    uint8_t pad[1];        // ensure 32 byte total size
 };
 
 // BVHAccel Utility Functions
@@ -219,6 +218,7 @@ BVHAccel::BVHAccel(std::vector<std::shared_ptr<Primitive>> p,
     treeBytes += totalNodes * sizeof(LinearBVHNode) + sizeof(*this) +
                  primitives.size() * sizeof(primitives[0]);
     nodes = AllocAligned<LinearBVHNode>(totalNodes);
+    LOG(INFO) << StringPrintf("Size of LinearBVHNode = %d", sizeof(*nodes));
     int offset = 0;
     flattenBVHTree(root, &offset);
     CHECK_EQ(totalNodes, offset);
