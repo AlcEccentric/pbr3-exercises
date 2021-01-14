@@ -237,6 +237,12 @@ Transform LookAt(const Point3f &pos, const Point3f &look, const Vector3f &up) {
 
 Bounds3f Transform::operator()(const Bounds3f &b) const {
     const Matrix4x4 &M = this->GetMatrix();
+    // According to my calculation, 
+    // the similar idea to compute transformed AABBs more efficiently can not be applied to DOPs
+    // Since computing and unioning those transformed 24 points looks not efficient,
+    // I compute a conservative version of the k-DOP: the k-DOP of the transformed AABB of b
+    //
+    // 1. compute transformed pMax and pMin using the efficient method
     Bounds3f ret2(Point3f(M.m[0][3], M.m[1][3], M.m[2][3]));
     Float pa, pb;
     for (int i = 0; i < 3; i++)        // for each row
@@ -251,6 +257,32 @@ Bounds3f Transform::operator()(const Bounds3f &b) const {
                 ret2.pMin[i] += pa;
             }
         }
+    // 2. compute transformed offsets
+    Float c[4] = {M.m[0][3] + M.m[1][3] + M.m[2][3],
+                  M.m[0][3] + M.m[1][3] - M.m[2][3],
+                  M.m[1][3] - M.m[0][3] + M.m[2][3],
+                  M.m[1][3] - M.m[0][3] - M.m[2][3]};
+    
+    Vector3f x0(M.m[0][0], M.m[0][1], M.m[0][2]);
+    Vector3f x1(M.m[1][0], M.m[1][1], M.m[1][2]);
+    Vector3f x2(M.m[2][0], M.m[2][1], M.m[2][2]);
+    Vector3f x[4] = {x0 + x1 + x2, x0 + x1 - x2, x1 - x0 + x2, x1 - x0 + x2};
+    
+    for (int i = 0; i < 4; i++) {
+        ret2.offsets[i][0] = c[i];
+        ret2.offsets[i][1] = c[i];
+        for (int j = 0; j < 3; j++) {
+            pa = x[i][j] * b.pMax[j];
+            pb = x[i][j] * b.pMin[j];
+            if (pa >= pb) {
+                ret2.offsets[i][0] += pb;
+                ret2.offsets[i][1] += pa;
+            } else {
+                ret2.offsets[i][0] += pa;
+                ret2.offsets[i][1] += pb;
+            }
+        }
+    }
     return ret2;
 }
 
@@ -1225,7 +1257,8 @@ Bounds3f AnimatedTransform::MotionBounds(const Bounds3f &b) const {
     // Return motion bounds accounting for animated rotation
     Bounds3f bounds;
     for (int corner = 0; corner < 8; ++corner)
-        bounds = Union(bounds, BoundPointMotion(b.Corner(corner)));
+        for (int order = 0; order < 3; ++order)
+            bounds = Union(bounds, BoundPointMotion(b.Corner(corner, order)));
     return bounds;
 }
 

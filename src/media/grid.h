@@ -79,7 +79,7 @@ class GridDensityMedium : public Medium {
     Float Density(const Point3f &p) const;
     Float D(const Point3i &p) const {
         Bounds3i sampleBounds(Point3i(0, 0, 0), Point3i(nx, ny, nz));
-        if (!InsideExclusive(p, sampleBounds)) return 0;
+        if (!sampleBounds.ExclusivelyContains(p)) return 0;
         return density[(p.z * ny + p.y) * nx + p.x];
     }
     Spectrum Sample(const Ray &ray, Sampler &sampler, MemoryArena &arena,

@@ -423,8 +423,7 @@ class Point3 {
     Point3() { x = y = z = 0; }
     Point3(T x, T y, T z) : x(x), y(y), z(z) { DCHECK(!HasNaNs()); }
     template <typename U>
-    explicit Point3(const Point3<U> &p)
-        : x((T)p.x), y((T)p.y), z((T)p.z) {
+    explicit Point3(const Point3<U> &p) : x((T)p.x), y((T)p.y), z((T)p.z) {
         DCHECK(!HasNaNs());
     }
     template <typename U>
@@ -745,45 +744,169 @@ class Bounds2 {
     Point2<T> pMin, pMax;
 };
 
+const static int DOPNum = 7;
+
+const static Normal3f DOPNormals[DOPNum] = {
+    Normal3f(1, 0, 0),
+    Normal3f(0, 1, 0),
+    Normal3f(0, 0, 1),
+    Normal3f(1, 1, 1),
+    Normal3f(1, 1, -1),
+    Normal3f(-1, 1, 1),
+    Normal3f(-1, 1, -1)
+};
+
+
 template <typename T>
 class Bounds3 {
+    // TODO: use 3 pair of offsets to represent pMin and pMax
   public:
     // Bounds3 Public Methods
+    // In original constructors, set k = 6 since one IntersectP will only work for AABB boxes.
     Bounds3() {
+        // Empty box
+        k = 6;
         T minNum = std::numeric_limits<T>::lowest();
         T maxNum = std::numeric_limits<T>::max();
         pMin = Point3<T>(maxNum, maxNum, maxNum);
         pMax = Point3<T>(minNum, minNum, minNum);
+        for (int i = 0; i < DOPNum-3; i++) {
+            offsets[i][0] = minNum;
+            offsets[i][1] = minNum;
+        }
     }
-    explicit Bounds3(const Point3<T> &p) : pMin(p), pMax(p) {}
+    explicit Bounds3(const Point3<T> &p) : pMin(p), pMax(p) {
+        // Point box
+        k = 6;
+        for (int i = 0; i < DOPNum-3; i++) {
+            offsets[i][0] = offsets[i][1] =
+                Dot(Normalize(DOPNormals[i+3]), (Vector3f)p);
+        }
+    }
     Bounds3(const Point3<T> &p1, const Point3<T> &p2)
         : pMin(std::min(p1.x, p2.x), std::min(p1.y, p2.y),
                std::min(p1.z, p2.z)),
           pMax(std::max(p1.x, p2.x), std::max(p1.y, p2.y),
-               std::max(p1.z, p2.z)) {}
-    const Point3<T> &operator[](int i) const;
-    Point3<T> &operator[](int i);
+               std::max(p1.z, p2.z)) {
+        // 6-dop box in 14-dop form
+        k = 6;
+        for (int i = 0; i < DOPNum-3; i++) {
+            Normal3f n = Normalize(DOPNormals[i+3]);
+            offsets[i][0] = Dot(n, (Vector3f)pMin);
+            offsets[i][1] = Dot(n, (Vector3f)pMax);
+        }
+    }
+    Bounds3(const std::vector<Point2<T>> &os) { 
+        // Standard 14-dop box constructor 1
+        DCHECK(os.size() == DOPNum);
+        k = 14;
+        // the order of Point2 in os should correspond to DOPNormals
+        pMin = Point3<T>(std::min(os[0][0], os[0][1]), 
+                         std::min(os[1][0], os[1][1]),
+                         std::min(os[2][0], os[2][1]));
+        pMax = Point3<T>(std::max(os[0][0], os[0][1]),
+                         std::max(os[1][0], os[1][1]),
+                         std::max(os[2][0], os[2][1]));
+
+        for (int i = 0; i < DOPNum-3; i++) {
+            offsets[i][0] = std::min(os[i+3][0], os[i+3][1]);
+            offsets[i][1] = std::max(os[i+3][0], os[i+3][1]);
+        }
+        
+    }
+    Bounds3(const Point3<T> &p1, const Point3<T> &p2, const std::vector<Point2<T>> &os) {
+        // Standard 14-dop box constructor 2
+        DCHECK(os.size() == DOPNum-3);
+        k = 14;
+        pMin = Point3<T>(std::min(p1.x, p2.x), std::min(p1.y, p2.y),
+                         std::min(p1.z, p2.z));
+        pMax = Point3<T>(std::max(p1.x, p2.x), std::max(p1.y, p2.y),
+                         std::max(p1.z, p2.z));
+
+        for (int i = 0; i < DOPNum-3; i++) {
+            offsets[i][0] = std::min(os[i][0], os[i][1]);
+            offsets[i][1] = std::max(os[i][0], os[i][1]);
+        }
+    }
+    // These two are used in: IntersectP, Corner
+    const Point2<T> &operator[](int i) const;
+    Point2<T> &operator[](int i);
     bool operator==(const Bounds3<T> &b) const {
+        for (int i = 0; i < DOPNum - 3; i++) {
+            if (offsets[i] != b.offsets[i]) return false;
+        }
         return b.pMin == pMin && b.pMax == pMax;
     }
     bool operator!=(const Bounds3<T> &b) const {
+        for (int i = 0; i < DOPNum - 3; i++) {
+            if (offsets[i] != b.offsets[i]) return true;
+        }
         return b.pMin != pMin || b.pMax != pMax;
     }
-    Point3<T> Corner(int corner) const {
+    Point3<T> CubeCorner(int corner) const {
         DCHECK(corner >= 0 && corner < 8);
-        return Point3<T>((*this)[(corner & 1)].x,
-                         (*this)[(corner & 2) ? 1 : 0].y,
-                         (*this)[(corner & 4) ? 1 : 0].z);
+        Normal3<T> &n = DOPNormals[3 + corner >> 1] * (corner & 1 ? 1 : -1);
+        return Point3<T>((n[0] == 1 ? pMax.x : pMin.x),
+                         (n[1] == 1 ? pMax.y : pMin.y),
+                         (n[2] == 1 ? pMax.z : pMin.z));
+    }
+    Point3<T> Corner(int corner, int order) const {
+        DCHECK(corner >= 0 && corner < 8);
+        DCHECK(order >= 0 && order < 3);
+        // Although this func is only used when transforming a bounds3 which means the order doesn't matter,
+        // I still put them in such an order:
+        // The 1st&2nd three are vertices around DOPNormals[3+0].
+        // The 3rd&4th three vertices are around DOPNormals[3+1] and so on...
+        // Among each three vertices, the vertex on the edge parallel to x/y/z axis ranks 1/2/3 respectively.
+        Normal3<T> &un = Normalize(DOPNormals[3 + corner >> 1]);
+        Normal3<T> &unr = Normal3<T>(1/un[0], 1/un[1], 1/un[2]);
+        Point3<T> c = CubeCorner(corner);
+
+        if (order == 0)
+            return Point3<T>(
+                (offsets[corner >> 1][corner & 1] - (c[1] * un[1] + c[2] * un[2])) * unr[0], 
+                c[1], 
+                c[2]);
+        else if (order == 1)
+            return Point3<T>(
+                c[0], 
+                (offsets[corner >> 1][corner & 1] - (c[0] * un[0] + c[2] * un[2])) * unr[1], 
+                c[2]);
+        else
+            return Point3<T>(
+                c[0], 
+                c[1], 
+                (offsets[corner >> 1][corner & 1] - (c[0] * un[0] + c[1] * un[1])) * unr[2]);
     }
     Vector3<T> Diagonal() const { return pMax - pMin; }
+    Float CornerHeight(int corner) const {
+        return std::abs(Dot((Vector3f)CubeCorner(corner), Normalize(DOPNormals[(corner >> 1) + 3])) -
+                 offsets[corner >> 1][corner & 1]);
+    }
     T SurfaceArea() const {
         Vector3<T> d = Diagonal();
-        return 2 * (d.x * d.y + d.x * d.z + d.y * d.z);
+        Float a = 2 * (d.x * d.y + d.x * d.z + d.y * d.z), recip = (3 * std::sqrt(3) - 9)/2, h;
+        for (int i = 0; i < DOPNum-3; i++) {
+            h = CornerHeight(i << 1);
+            a += (h * h * recip);
+            
+            h = CornerHeight((i << 1) + 1);
+            a += (h * h * recip);
+        }
+        return (T)a;
     }
     T Volume() const {
         Vector3<T> d = Diagonal();
-        return d.x * d.y * d.z;
+        Float v = d.x * d.y * d.z, recip = std::sqrt(3) / 2, h;
+        for (int i = 0; i < DOPNum-3; i++) {
+            h = h(i << 1);
+            v -= (h * h * h * recip);
+            h = h((i << 1) + 1);
+            v -= (h * h * h * recip);
+        }
+        return (T)v;
     }
+    // TODO: should we try to divide bounding boxes on 7 orientations?
     int MaximumExtent() const {
         Vector3<T> d = Diagonal();
         if (d.x > d.y && d.x > d.z)
@@ -793,37 +916,99 @@ class Bounds3 {
         else
             return 2;
     }
+    // ATTENTION1: 14-dop implementation here assumes all the offsets are meaningful,
+    // which means every offset value (includeing coordinates in pMin and pMax) will defines a boundary plane.
     Point3<T> Lerp(const Point3f &t) const {
-        return Point3<T>(pbrt::Lerp(t.x, pMin.x, pMax.x),
-                         pbrt::Lerp(t.y, pMin.y, pMax.y),
-                         pbrt::Lerp(t.z, pMin.z, pMax.z));
+        Point3<T> lerpPoint(pbrt::Lerp(t.x, pMin.x, pMax.x),
+                            pbrt::Lerp(t.y, pMin.y, pMax.y),
+                            pbrt::Lerp(t.z, pMin.z, pMax.z));
+        Float p = Dot(Normalize(DOPNormals[3]), (Vector3f)lerpPoint);
+        if (p > offsets[0][1]) {
+            lerpPoint *= (offsets[0][1] / p);
+        } else if (p < offsets[0][0]) {
+            lerpPoint *= (offsets[0][0] / p);
+        }
+        if (std::is_same<T, int>::value) {
+            // trunc for integer bounds
+            for (int i = 0; i < 3; i++) 
+                lerpPoint[i] = std::trunc(lerpPoint[i]);
+        }
+        return lerpPoint;
     }
     Vector3<T> Offset(const Point3<T> &p) const {
-        Vector3<T> o = p - pMin;
+        Point3<T> innerP = p;
+        Float t = Dot(Normalize(DOPNormals[3]), (Vector3f)innerP);
+        if (t > offsets[0][1]) {
+            innerP *= (offsets[0][1] / t);
+        } else if (t < offsets[0][0]) {
+            innerP *= (offsets[0][0] / t);
+        }
+        Vector3<T> o = innerP - pMin;
         if (pMax.x > pMin.x) o.x /= pMax.x - pMin.x;
         if (pMax.y > pMin.y) o.y /= pMax.y - pMin.y;
         if (pMax.z > pMin.z) o.z /= pMax.z - pMin.z;
         return o;
     }
+    bool Contains(const Point3<T> &p) const {
+        for (int i = 0; i < DOPNum-3; i++) {
+            Float o = Dot(Normalize(DOPNormals[i+3]), (Vector3f)p);
+            if(o < offsets[i][0] || o > offsets[i][1]) return false;
+        }
+        return (p.x >= pMin.x && p.x <= pMax.x && p.y >= pMin.y &&
+                p.y <= pMax.y && p.z >= pMin.z && p.z <= pMax.z);
+    }
+    bool ExclusivelyContains(const Point3<T> &p) {
+        for (int i = 0; i < DOPNum-3; i++) {
+            Float o = Dot(Normalize(DOPNormals[i+3]), (Vector3f)p);
+            if (o < offsets[i][0] || o >= offsets[i][1]) return false;
+        }
+        return (p.x >= pMin.x && p.x < pMax.x && p.y >= pMin.y &&
+                p.y < pMax.y && p.z >= pMin.z && p.z < pMax.z);
+    }
+    // A bounding sphere is usedin two cases: testing collision in a world bounding box, and computing pdf in bdpt integrator.
+    // For the first use case, a little larger conservative sphere generated by BoundingSphere could be used without making any difference.
+    // For the second use case, a larger sphere may make some differences.
+    // Thus, I implement another TighterBoundingSphere func which involves more computation but gives a tighter sphere bounding.
     void BoundingSphere(Point3<T> *center, Float *radius) const {
         *center = (pMin + pMax) / 2;
-        *radius = Inside(*center, *this) ? Distance(*center, pMax) : 0;
+        *radius = Contains(*center) ? Distance(*center, pMax) : 0;
+    }
+    void TighterBoundingSphere(Point3<T> *center, Float *radius) const {
+        *center = (pMin + pMax) / 2;
+        *radius = 0;
+        if (Contains(*center))
+            for (int i = 0; i < 8; i++)
+                for (int j = 0; j < 3; j++) {
+                    *radius = std::max(Distance(Corner(i, j), center), *radius);
+                }
     }
     template <typename U>
     explicit operator Bounds3<U>() const {
-        return Bounds3<U>((Point3<U>)pMin, (Point3<U>)pMax);
+        Point2<U> retOffsets[DOPNum - 3];
+        for (int i = 0; i < DOPNum - 3; i++)
+            retOffsets[i] = (Point2<U>)offsets[i];
+        return Bounds3<U>((Point3<U>)pMin, (Point3<U>)pMax, retOffsets);
     }
     bool IntersectP(const Ray &ray, Float *hitt0 = nullptr,
                     Float *hitt1 = nullptr) const;
     inline bool IntersectP(const Ray &ray, const Vector3f &invDir,
                            const int dirIsNeg[3]) const;
     friend std::ostream &operator<<(std::ostream &os, const Bounds3<T> &b) {
-        os << "[ " << b.pMin << " - " << b.pMax << " ]";
+        for (int i = 0; i < 3; i++) {
+            os << "[ " << DOPNormals[i] << ": " << b.pMin[i] << " - "
+               << b.pMax[i] << " ]\n";
+        } 
+        for (int i = 0; i < DOPNum-3; i++) {
+            os << "[ " << DOPNormals[i+3] << ": " << b.offsets[i][0] << " - "
+               << b.offsets[i][1] << " ]\n";
+        }
         return os;
     }
 
     // Bounds3 Public Data
-    Point3<T> pMin, pMax;
+    uint8_t k;
+    Point3<T> pMin, pMax; 
+    Point2<T> offsets[DOPNum-3]; // additional offsets for 14-dop (Note: DO NOT use vector in Bounds3 since it will be allocated with _align_malloc in bvh.cpp
 };
 
 typedef Bounds2<Float> Bounds2f;
@@ -1235,15 +1420,23 @@ Normal3<T> Abs(const Normal3<T> &v) {
 }
 
 template <typename T>
-inline const Point3<T> &Bounds3<T>::operator[](int i) const {
-    DCHECK(i == 0 || i == 1);
-    return (i == 0) ? pMin : pMax;
+inline const Point2<T> &Bounds3<T>::operator[](int i) const {
+    DCHECK(i >= 0 && i < 7);
+    if (i < 3) {
+        return Point2<T>(pMin[i], pMax[i]);
+    } else {
+        return offsets[i - 3];
+    }
 }
 
 template <typename T>
-inline Point3<T> &Bounds3<T>::operator[](int i) {
-    DCHECK(i == 0 || i == 1);
-    return (i == 0) ? pMin : pMax;
+inline Point2<T> &Bounds3<T>::operator[](int i) {
+    DCHECK(i >= 0 && i < 7);
+    if (i < 3) {
+        return Point2<T>(pMin[i], pMax[i]);
+    } else {
+        return offsets[i - 3];
+    }
 }
 
 template <typename T>
@@ -1251,6 +1444,11 @@ Bounds3<T> Union(const Bounds3<T> &b, const Point3<T> &p) {
     Bounds3<T> ret;
     ret.pMin = Min(b.pMin, p);
     ret.pMax = Max(b.pMax, p);
+    for (int i = 0; i < DOPNum - 3; i++) {
+        T t = Dot(Normalize(DOPNormals[3 + i]), (Vector3f)p);
+        ret.offsets[i][0] = std::min(b.offsets[i][0], t);
+        ret.offsets[i][1] = std::max(b.offsets[i][1], t);
+    }
     return ret;
 }
 
@@ -1259,6 +1457,10 @@ Bounds3<T> Union(const Bounds3<T> &b1, const Bounds3<T> &b2) {
     Bounds3<T> ret;
     ret.pMin = Min(b1.pMin, b2.pMin);
     ret.pMax = Max(b1.pMax, b2.pMax);
+    for (int i = 0; i < DOPNum - 3; i++) {
+        ret.offsets[i][0] = std::min(b1.offsets[i][0], b2.offsets[i][0]);
+        ret.offsets[i][1] = std::max(b1.offsets[i][1], b2.offsets[i][1]);
+    }
     return ret;
 }
 
@@ -1271,33 +1473,36 @@ Bounds3<T> Intersect(const Bounds3<T> &b1, const Bounds3<T> &b2) {
     Bounds3<T> ret;
     ret.pMin = Max(b1.pMin, b2.pMin);
     ret.pMax = Min(b1.pMax, b2.pMax);
+    for (int i = 0; i < DOPNum - 3; i++) {
+        ret.offsets[i][0] = std::max(b1.offsets[i][0], b2.offsets[i][0]);
+        ret.offsets[i][1] = std::min(b1.offsets[i][1], b2.offsets[i][1]);
+    }
     return ret;
 }
 
 template <typename T>
 bool Overlaps(const Bounds3<T> &b1, const Bounds3<T> &b2) {
+    for (int i = 0; i < DOPNum - 3; i++) {
+        if (b1.offsets[i][1] < b2.offsets[i][0] ||
+            b1.offsets[i][0] > b2.offsets[i][1])
+            return false;
+    }
     bool x = (b1.pMax.x >= b2.pMin.x) && (b1.pMin.x <= b2.pMax.x);
     bool y = (b1.pMax.y >= b2.pMin.y) && (b1.pMin.y <= b2.pMax.y);
     bool z = (b1.pMax.z >= b2.pMin.z) && (b1.pMin.z <= b2.pMax.z);
     return (x && y && z);
 }
 
-template <typename T>
-bool Inside(const Point3<T> &p, const Bounds3<T> &b) {
-    return (p.x >= b.pMin.x && p.x <= b.pMax.x && p.y >= b.pMin.y &&
-            p.y <= b.pMax.y && p.z >= b.pMin.z && p.z <= b.pMax.z);
-}
-
-template <typename T>
-bool InsideExclusive(const Point3<T> &p, const Bounds3<T> &b) {
-    return (p.x >= b.pMin.x && p.x < b.pMax.x && p.y >= b.pMin.y &&
-            p.y < b.pMax.y && p.z >= b.pMin.z && p.z < b.pMax.z);
-}
-
 template <typename T, typename U>
 inline Bounds3<T> Expand(const Bounds3<T> &b, U delta) {
-    return Bounds3<T>(b.pMin - Vector3<T>(delta, delta, delta),
+    Bounds3<T> ret = Bounds3<T>(b.pMin - Vector3<T>(delta, delta, delta),
                       b.pMax + Vector3<T>(delta, delta, delta));
+
+    for (int i = 0; i < DOPNum - 3; i++) {
+        ret.offsets[i][0] = b.offsets[i][0] - (T)delta;
+        ret.offsets[i][1] = b.offsets[i][1] + (T)delta;
+    }
+    return ret;
 }
 
 // Minimum squared distance from point to box; returns zero if point is
@@ -1403,6 +1608,23 @@ inline bool Bounds3<T>::IntersectP(const Ray &ray, Float *hitt0,
         t1 = tFar < t1 ? tFar : t1;
         if (t0 > t1) return false;
     }
+    for (int i = 0; i < DOPNum-3; ++i) {
+        // Update interval for _i_th bounding box slab
+        Float no = Dot(Normalize(DOPNormals[3 + i]), (Vector3f)ray.o);
+        Float inv = 1 / Dot(Normalize(DOPNormals[3 + i]), ray.d);
+        
+        Float tNear = (offsets[i][0] - no) * inv;
+        Float tFar = (offsets[i][1] - no) * inv;
+
+        // Update parametric interval from slab intersection $t$ values
+        if (tNear > tFar) std::swap(tNear, tFar);
+
+        // Update _tFar_ to ensure robust ray--bounds intersection
+        tFar *= 1 + 2 * gamma(3);
+        t0 = tNear > t0 ? tNear : t0;
+        t1 = tFar < t1 ? tFar : t1;
+        if (t0 > t1) return false;
+    }
     if (hitt0) *hitt0 = t0;
     if (hitt1) *hitt1 = t1;
     return true;
@@ -1411,12 +1633,15 @@ inline bool Bounds3<T>::IntersectP(const Ray &ray, Float *hitt0,
 template <typename T>
 inline bool Bounds3<T>::IntersectP(const Ray &ray, const Vector3f &invDir,
                                    const int dirIsNeg[3]) const {
+    // This version only works for AABB
+    DCHECK(k == 6);
+   
     const Bounds3f &bounds = *this;
     // Check for ray intersection against $x$ and $y$ slabs
-    Float tMin = (bounds[dirIsNeg[0]].x - ray.o.x) * invDir.x;
-    Float tMax = (bounds[1 - dirIsNeg[0]].x - ray.o.x) * invDir.x;
-    Float tyMin = (bounds[dirIsNeg[1]].y - ray.o.y) * invDir.y;
-    Float tyMax = (bounds[1 - dirIsNeg[1]].y - ray.o.y) * invDir.y;
+    Float tMin = ((dirIsNeg[0] == 0 ? pMin.x : pMax.x) - ray.o.x) * invDir.x;//dirIsNeg==0 -> min
+    Float tMax = ((dirIsNeg[0] == 1 ? pMin.x : pMax.x) - ray.o.x) * invDir.x;
+    Float tyMin = ((dirIsNeg[1] == 0 ? pMin.y : pMax.y) - ray.o.y) * invDir.y;
+    Float tyMax = ((dirIsNeg[1] == 1 ? pMin.y : pMax.y) - ray.o.y) * invDir.y;
 
     // Update _tMax_ and _tyMax_ to ensure robust bounds intersection
     tMax *= 1 + 2 * gamma(3);
@@ -1426,8 +1651,8 @@ inline bool Bounds3<T>::IntersectP(const Ray &ray, const Vector3f &invDir,
     if (tyMax < tMax) tMax = tyMax;
 
     // Check for ray intersection against $z$ slab
-    Float tzMin = (bounds[dirIsNeg[2]].z - ray.o.z) * invDir.z;
-    Float tzMax = (bounds[1 - dirIsNeg[2]].z - ray.o.z) * invDir.z;
+    Float tzMin = ((dirIsNeg[2] == 0 ? pMin.z : pMax.z) - ray.o.z) * invDir.z;
+    Float tzMax = ((dirIsNeg[2] == 1 ? pMin.z : pMax.z) - ray.o.z) * invDir.z;
 
     // Update _tzMax_ to ensure robust bounds intersection
     tzMax *= 1 + 2 * gamma(3);
