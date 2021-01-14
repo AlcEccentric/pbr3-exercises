@@ -236,16 +236,22 @@ Transform LookAt(const Point3f &pos, const Point3f &look, const Vector3f &up) {
 }
 
 Bounds3f Transform::operator()(const Bounds3f &b) const {
-    const Transform &M = *this;
-    Bounds3f ret(M(Point3f(b.pMin.x, b.pMin.y, b.pMin.z)));
-    ret = Union(ret, M(Point3f(b.pMax.x, b.pMin.y, b.pMin.z)));
-    ret = Union(ret, M(Point3f(b.pMin.x, b.pMax.y, b.pMin.z)));
-    ret = Union(ret, M(Point3f(b.pMin.x, b.pMin.y, b.pMax.z)));
-    ret = Union(ret, M(Point3f(b.pMin.x, b.pMax.y, b.pMax.z)));
-    ret = Union(ret, M(Point3f(b.pMax.x, b.pMax.y, b.pMin.z)));
-    ret = Union(ret, M(Point3f(b.pMax.x, b.pMin.y, b.pMax.z)));
-    ret = Union(ret, M(Point3f(b.pMax.x, b.pMax.y, b.pMax.z)));
-    return ret;
+    const Matrix4x4 &M = this->GetMatrix();
+    Bounds3f ret2(Point3f(M.m[0][3], M.m[1][3], M.m[2][3]));
+    Float pa, pb;
+    for (int i = 0; i < 3; i++)        // for each row
+        for (int j = 0; j < 3; j++) {  // for each column
+            pa = M.m[i][j] * b.pMax[j];
+            pb = M.m[i][j] * b.pMin[j];
+            if (pa >= pb) {
+                ret2.pMax[i] += pa;
+                ret2.pMin[i] += pb;
+            } else {
+                ret2.pMax[i] += pb;
+                ret2.pMin[i] += pa;
+            }
+        }
+    return ret2;
 }
 
 Transform Transform::operator*(const Transform &t2) const {
